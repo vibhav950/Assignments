@@ -5,7 +5,7 @@
  * and a write operation is performed if required. The cache
  * memory block is displayed on every iteration.
  *
- * CS251B (MPCA) - Assignment #1
+ * CS251B (MPCA) - Assignment 2
  * Dated 18-4-24
  */
 
@@ -45,6 +45,7 @@ typedef struct _cache_node_t
     unsigned int block : N_BLOCK_NUMBER_BITS;
     unsigned int offset : N_BLOCK_OFFS_BITS;
     unsigned int valid : 1;
+    unsigned int mem[BLOCK_SIZE];
 } cache_node_t;
 
 /* Global counter values for cache history */
@@ -54,6 +55,9 @@ static int evictions = 0;
 
 /* The cache */
 static cache_node_t cache[N_LINES];
+
+/* The main memory */
+static unsigned int mem32[MEM_SIZE / WORD_SIZE];
 
 char *toBinaryString(unsigned char tag, int nbits)
 {
@@ -78,27 +82,30 @@ void print_cache()
        Tag bits - used to differentiate blocks mapped to the same line
        Block - the mem block currently stored in the cache line
        Offset - offset of the word in the block
-       Value - memory address of the word
+       Address - physical address of the word in decimal
+       Value - content of word at given address
     */
-    printf("+--------+--------+--------+--------+--------+--------+\n");
-    printf("| Index  | Valid  | Tag    | Block  | Offset | Value  |\n");
-    printf("+--------+--------+--------+--------+--------+--------+\n");
+    printf("+--------+--------+--------+--------+--------+--------+--------+\n");
+    printf("| Index  | Valid  | Tag    | Block  | Offset | Word   | Value  |\n");
+    printf("+--------+--------+--------+--------+--------+--------+--------+\n");
 
+                
     for (int i = 0; i < N_LINES; i++) {
-        printf("| %6d | %6d |  %s  | %6d |   %2d   | %6d |\n",
+        printf("| %6d | %6d |  %s  | %6d |   %2d   | %6d | %6d |\n",
                 i,
                 cache[i].valid,
                 toBinaryString(cache[i].tag, N_TAG_BITS),
                 cache[i].block,
                 cache[i].offset,
                 /* Construct the word addr from the block addr and block offset */
-                cache[i].offset + (cache[i].block << N_BLOCK_OFFS_BITS));
+                cache[i].offset + (cache[i].block << N_BLOCK_OFFS_BITS),
+                cache[i].mem[cache[i].offset]);
     }
 
-    printf("+--------+--------+--------+--------+--------+--------+\n");
+    printf("+--------+--------+--------+--------+--------+--------+--------+\n");
 }
 
-void process_address(uint32_t addr)
+void perform_read(uint32_t addr)
 {
     uint8_t offset = OFFS(addr);
     uint8_t block = BLOCK(addr);
@@ -107,42 +114,56 @@ void process_address(uint32_t addr)
 
     if (cache[line].valid == 0) {
         misses++;
-        /* Perform write */
         cache[line].tag = tag;
         cache[line].block = block;
         cache[line].offset = offset;
         cache[line].valid = 1;
         printf("Cache miss!\n");
+        cache[line].mem[0] = mem32[block * (BLOCK_SIZE / WORD_SIZE)];
+        cache[line].mem[1] = mem32[block * (BLOCK_SIZE / WORD_SIZE) + 1];
+        cache[line].mem[2] = mem32[block * (BLOCK_SIZE / WORD_SIZE) + 2];
+        cache[line].mem[3] = mem32[block * (BLOCK_SIZE / WORD_SIZE) + 3];
     } else if (cache[line].tag != tag) {
         misses++;
         evictions++;
-        /* Perform write */
         cache[line].tag = tag;
         cache[line].block = block;
         cache[line].offset = offset;
+        cache[line].mem[0] = mem32[block * (BLOCK_SIZE / WORD_SIZE)];
+        cache[line].mem[1] = mem32[block * (BLOCK_SIZE / WORD_SIZE) + 1];
+        cache[line].mem[2] = mem32[block * (BLOCK_SIZE / WORD_SIZE) + 2];
+        cache[line].mem[3] = mem32[block * (BLOCK_SIZE / WORD_SIZE) + 3];
         printf("Cache miss!\n");
     } else {
         hits++;
-        /* NOTE: In this case we DO NOT perform a write since
-           the block containing the referenced word is already
-           in the cache (cache hit). However in this simulator
-           we update the offset value to keep track of the most
-           recently referenced word.
-           
-           In a real cache, the entire block would be moved to
-           the cache (spatial locality) and we would use the
-           block offset value to get the desired word from its
-           corresponding line in cache.
-        */
         cache[line].offset = offset;
         printf("Cache hit!\n");
     }
 
-    print_cache();
-    printf("\x1B[94mHits\x1B[0m: %d, \x1B[94mMisses\x1B[0m: %d, \x1B[94mEvictions\x1B[0m: %d\n\n",
-            hits,
-            misses,
-            evictions);
+    printf("\n\x1B[94mValue\x1B[0m: %lu\n\n", cache[line].mem[offset]);
+}
+
+void perform_write(uint16_t addr, uint32_t word)
+{
+    uint8_t offset = OFFS(addr);
+    uint8_t block = BLOCK(addr);
+    uint8_t line = LINE(addr);
+    uint8_t tag = TAG(addr);
+
+    if (cache[line].valid == 0 || cache[line].tag != tag) {
+        /* Block not present in cache, we perform write around */
+        misses++;
+        mem32[addr] = word;
+        printf("Write miss!\n");
+    } else {
+        /* Perform write through */
+        hits++;
+        /* Write to cache */
+        cache[line].mem[offset] = word;
+        /* Write to memory */
+        mem32[addr] = word;
+        printf("Write hit!\n");
+    }
 }
 
 int main()
@@ -151,29 +172,86 @@ int main()
             "Mem size: 4096 B\n"
             "Cache size: 256 B\n"
             "Block size: 16 B\n"
-            "Press Ctrl+C to exit.\n\n");
+            "Press Ctrl+C to exit\n\n");
 
     /* Init the cache */
     memset((char *)cache, 0, sizeof(cache_node_t) * N_LINES);
 
     while (1) {
-        uint16_t address;
-        printf("Enter a physical address (in decimal): ");
-        scanf("%u", &address);
+        char cho;
 
-        /* Validate the address */
-        if (address > 4095 / WORD_SIZE) {
-            printf("\x1B[91m[ERROR]\x1B[0m Address out of bounds\n\n");
-            continue;
+        printf("r/w ");
+        scanf(" %c", &cho);
+
+        switch (cho) {
+            case 'r':
+            case 'R':
+            {
+                uint16_t address;
+
+                printf("address ");
+                scanf("%u", &address);
+
+                /* Validate the address */
+                if (address > 4095 / WORD_SIZE) {
+                    printf("\x1B[91m[ERROR]\x1B[0m Address out of bounds\n\n");
+                    continue;
+                }
+
+                /* Print binary breakdown */
+                printf("\nPhysical address: %s\n", toBinaryString(address, ceil_div(N_ADDRESS_BITS, 4) << 2));
+                printf("Offset bits: %s\n", toBinaryString(OFFS(address), N_BLOCK_OFFS_BITS));
+                printf("Line number bits: %s\n", toBinaryString(LINE(address), N_LINE_NUMBER_BITS));
+                printf("Tag bits: %s\n", toBinaryString(TAG(address), N_TAG_BITS));
+
+                perform_read(address);
+
+                print_cache();
+                printf("\x1B[94mHits\x1B[0m: %d, \x1B[94mMisses\x1B[0m: %d, \x1B[94mEvictions\x1B[0m: %d\n\n",
+                        hits,
+                        misses,
+                        evictions);
+
+                break;
+            }
+            case 'w':
+            case 'W':
+            {
+                uint16_t address;
+                uint32_t word;
+
+                printf("address ");
+                scanf("%u", &address);
+
+                /* Validate the address */
+                if (address > 4095 / WORD_SIZE) {
+                    printf("\x1B[91m[ERROR]\x1B[0m Address out of bounds\n\n");
+                    continue;
+                }
+
+                printf("word ");
+                scanf("%lu", &word);
+
+                /* Validate the address */
+                if (address > 4095 / WORD_SIZE) {
+                    printf("\x1B[91m[ERROR]\x1B[0m Address out of bounds\n\n");
+                    continue;
+                }
+
+                perform_write(address, word);
+
+                print_cache();
+                printf("\x1B[94mHits\x1B[0m: %d, \x1B[94mMisses\x1B[0m: %d, \x1B[94mEvictions\x1B[0m: %d\n\n",
+                        hits,
+                        misses,
+                        evictions);
+
+                break;
+            }
+            default:
+            printf("%c",cho);
+            break;
         }
-
-        /* Print binary breakdown */
-        printf("Physical address: %s\n", toBinaryString(address, ceil_div(N_ADDRESS_BITS, 4) << 2));
-        printf("Offset bits: %s\n", toBinaryString(OFFS(address), N_BLOCK_OFFS_BITS));
-        printf("Line number bits: %s\n", toBinaryString(LINE(address), N_LINE_NUMBER_BITS));
-        printf("Tag bits: %s\n", toBinaryString(TAG(address), N_TAG_BITS));
-
-        process_address(address);
     }
 
     return 0;
