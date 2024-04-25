@@ -240,6 +240,13 @@ int main()
 
                 perform_write(address, word);
 
+                for (int i = 0; i < MEM_SIZE / WORD_SIZE; ++i) {
+                    if (i != 0 && i % 4 == 0)
+                        printf("\n");
+                    printf("%lu ", mem32[i]);
+                }
+                printf("\n\n");
+
                 print_cache();
                 printf("\x1B[94mHits\x1B[0m: %d, \x1B[94mMisses\x1B[0m: %d, \x1B[94mEvictions\x1B[0m: %d\n\n",
                         hits,
